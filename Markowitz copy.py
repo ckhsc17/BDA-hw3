@@ -102,37 +102,62 @@ Implement a risk parity strategy as dataframe "rp". Please do "not" include SPY.
 
 
 class RiskParityPortfolio:
-    def __init__(self, exclude, lookback=50):
+    def __init__(self, exclude, lookback=50, max_iter=100, tol=1e-6):
         self.exclude = exclude
         self.lookback = lookback
+        self.max_iter = max_iter  # 加入這行
+        self.tol = tol            # 加入這行
 
     def calculate_weights(self):
+        # 篩選資產（不含 exclude）
         assets = df.columns[df.columns != self.exclude]
+        n = len(assets)
+
+        # 準備儲存 weights 的 DataFrame
         self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
 
-        # ------------------ Task 2: Risk Parity (Inverse Volatility) ------------------
-        for i in range(self.lookback + 1, len(df)):
+        # 對每個時間點計算過去 lookback 天的 ERC 權重
+        for i in range(self.lookback, len(df)):
             date = df.index[i]
-            # Rolling window of returns
-            R_n = df_returns[assets].iloc[i - self.lookback : i].dropna()
-            # Compute volatilities
-            vol = R_n.std()
-            # Inverse volatility weights
-            inv_vol = 1.0 / vol
-            w = inv_vol / inv_vol.sum()
-            # Assign weights at this date
-            self.portfolio_weights.loc[date, assets] = w.values
-        # Excluded asset zero weight
-        self.portfolio_weights[self.exclude] = 0.0
-        # -------------------------------------------------------------------------------
+            window = df_returns[assets].iloc[i - self.lookback : i]
 
+            # 1. 計算協方差矩陣
+            Sigma = window.cov().values
+            # 2. 初始 w：用 1/vol 做暖身
+            vols = window.std().values
+            w = (1.0 / vols)
+            w = w / w.sum()
+
+            # 3. 目標風險貢獻
+            port_vol = np.sqrt(w @ Sigma @ w)
+            target_RC = port_vol / n
+
+            # 4. 迭代調整到等風險貢獻
+            for _ in range(self.max_iter):
+                mrc = Sigma.dot(w)             # 邊際風險貢獻 MRC_i = (Σw)_i
+                rc = w * mrc                   # 風險貢獻 RC_i = w_i·MRC_i
+                # 權重更新：w_i ← w_i * (target_RC / RC_i)
+                w_new = w * (target_RC / rc)
+                w_new /= w_new.sum()
+                # 收斂檢查
+                if np.max(np.abs(w_new - w)) < self.tol:
+                    w = w_new
+                    break
+                w = w_new
+
+            # 5. 指派回 DataFrame
+            self.portfolio_weights.loc[date, assets] = w
+
+        # 向前填補並將 exclude 欄位設為 0
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
 
     def calculate_portfolio_returns(self):
+        # Ensure weights are calculated
         if not hasattr(self, "portfolio_weights"):
             self.calculate_weights()
 
+        # Calculate the portfolio returns
         self.portfolio_returns = df_returns.copy()
         assets = df.columns[df.columns != self.exclude]
         self.portfolio_returns["Portfolio"] = (
@@ -142,9 +167,12 @@ class RiskParityPortfolio:
         )
 
     def get_results(self):
+        # Ensure portfolio returns are calculated
         if not hasattr(self, "portfolio_returns"):
             self.calculate_portfolio_returns()
+
         return self.portfolio_weights, self.portfolio_returns
+
 
 """
 Problem 3:

@@ -1,0 +1,74 @@
+       def calculate_weights(self):
+            # Get the assets by excluding the specified column
+            assets = df.columns[df.columns != self.exclude]
+
+            # Calculate the portfolio weights
+            self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
+
+            # Rolling volatility (standard deviation)
+            rolling_vol = df[assets].rolling(window=self.lookback).std()
+
+            # Inverse volatility
+            inv_vol = 1 / rolling_vol
+
+            # Normalize to get weights
+            weights = inv_vol.div(inv_vol.sum(axis=1), axis=0)
+
+            # Fill in the weights for included assets
+            self.portfolio_weights[assets] = weights
+
+            # Fill in excluded asset (like SPY) with 0 weight
+            self.portfolio_weights[self.exclude] = 0
+
+            # Forward fill and fill any remaining NaNs with 0
+            self.portfolio_weights.ffill(inplace=True)
+            self.portfolio_weights.fillna(0, inplace=True)
+
+    def calculate_weights(self):
+        assets = df.columns[df.columns != self.exclude]
+        n = len(assets)
+        self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
+
+        for i in range(self.lookback, len(df)):
+            date = df.index[i]
+            window = df_returns[assets].iloc[i - self.lookback : i].dropna()
+            if len(window) < self.lookback:
+                continue  # 不足 lookback 天，跳過這一天
+            Sigma = window.cov().values
+
+            try:
+                # Gurobi model
+                m = gp.Model()
+                m.Params.OutputFlag = 0  # silent mode
+
+                w = m.addVars(n, lb=0, name="w")  # long-only
+                m.addConstr(gp.quicksum(w[j] for j in range(n)) == 1, name="fully_invested")
+
+                # Calculate portfolio variance
+                port_var = gp.quicksum(
+                    w[i] * Sigma[i, j] * w[j] for i in range(n) for j in range(n)
+                )
+
+                # Compute marginal contribution of risk
+                mrc = [gp.quicksum(Sigma[i, j] * w[j] for j in range(n)) for i in range(n)]
+
+                # Risk contribution
+                rc = [w[i] * mrc[i] for i in range(n)]
+
+                # Objective: Minimize sum of squared difference from average RC
+                avg_rc = port_var / n
+                obj = gp.quicksum((rc[i] - avg_rc) * (rc[i] - avg_rc) for i in range(n))
+                m.setObjective(obj, gp.GRB.MINIMIZE)
+
+                m.optimize()
+                w_opt = np.array([w[j].X for j in range(n)])
+                self.portfolio_weights.loc[date, assets] = w_opt
+
+            except gp.GurobiError:
+                continue  # skip this date if optimization fails
+
+        self.portfolio_weights.ffill(inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
+        self.portfolio_weights[self.exclude] = 0
+
+    

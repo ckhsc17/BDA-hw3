@@ -58,57 +58,52 @@ class MyPortfolio:
         self.gamma = gamma
 
     def calculate_weights(self):
+        # Get the assets by excluding the specified column
         assets = self.price.columns[self.price.columns != self.exclude]
-        # 初始化 weights
-        self.portfolio_weights = pd.DataFrame(0.0, index=self.price.index, columns=self.price.columns)
 
-        # 年化因子
-        ann_factor = 252
+        # Calculate the portfolio weights
+        self.portfolio_weights = pd.DataFrame(
+            index=self.price.index, columns=self.price.columns
+        )
 
-        # 事前計算滾動平均報酬與共變異數
-        mu_rol = self.returns[assets].rolling(self.lookback).mean() * ann_factor
-        cov_rol = self.returns[assets].rolling(self.lookback).cov() * ann_factor
+        """
+        TODO: Complete Task 4 Below
+        """
 
-        # 逐日 re‐balance
-        for t in range(self.lookback, len(self.price)):
-            date = self.price.index[t]
-            mu_t = mu_rol.loc[date].dropna()
-            # cov_rol 是一個多層索引 DataFrame，先擷取當天的子矩陣
-            cov_t = cov_rol.loc[date].unstack().loc[assets, assets]
+    def calculate_weights(self):
+        # Get the assets by excluding the specified column
+        assets = self.price.columns[self.price.columns != self.exclude]
 
-            # 建 Gurobi 模型
-            model = gp.Model()
-            # 關閉 log
-            model.Params.OutputFlag = 0
+        # Prepare an empty DataFrame for weights
+        self.portfolio_weights = pd.DataFrame(
+            index=self.price.index, columns=self.price.columns
+        )
 
-            # 決策變數：每個資產的權重
-            w = model.addVars(assets, lb=0.0, ub=1.0)
+        # 1) rolling volatility (std) over lookback window
+        rolling_vol = self.returns[assets].rolling(window=self.lookback).std()
 
-            # 總權重 ≤ 1（不使用槓桿）
-            model.addConstr(gp.quicksum(w[a] for a in assets) <= 1)
+        # 2) inverse volatility
+        inv_vol = 1.0 / rolling_vol
 
-            # 目標函數：最大化 μ^T w − γ w^T Σ w
-            lin_term = gp.quicksum(mu_t[a] * w[a] for a in assets)
-            if self.gamma > 0:
-                quad_term = gp.quicksum(cov_t.loc[i, j] * w[i] * w[j]
-                                         for i in assets for j in assets)
-                model.setObjective(lin_term - self.gamma * quad_term,
-                                   gp.GRB.MAXIMIZE)
-            else:
-                model.setObjective(lin_term, gp.GRB.MAXIMIZE)
+        # 3) normalize so weights sum to 1 each day
+        weights = inv_vol.div(inv_vol.sum(axis=1), axis=0)
 
-            model.optimize()
+        # assign to the weight matrix
+        self.portfolio_weights[assets] = weights
 
-            # 取解並填入
-            for a in assets:
-                self.portfolio_weights.at[date, a] = w[a].X
+        # ensure the excluded asset has zero weight
+        self.portfolio_weights[self.exclude] = 0
 
-        # 排除 exclude（如 SPY）
-        self.portfolio_weights[self.exclude] = 0.0
-
-        # 向前填補空值並將剩餘 NaN 置 0
+        # forward‐fill the first few NaNs, then set any remaining NaNs to 0
         self.portfolio_weights.ffill(inplace=True)
-        self.portfolio_weights.fillna(0.0, inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
+
+        """
+        TODO: Complete Task 4 Above
+        """
+
+        self.portfolio_weights.ffill(inplace=True)
+        self.portfolio_weights.fillna(0, inplace=True)
 
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated
